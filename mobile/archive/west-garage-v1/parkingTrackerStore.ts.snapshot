@@ -1,0 +1,100 @@
+import * as Crypto from "expo-crypto";
+import * as SQLite from "expo-sqlite";
+
+import { initialTrackerState, transition, type CompletedVisit, type TrackerEvent, type TrackerState } from "./parkingTrackerState";
+
+export type StoredVisit = CompletedVisit & {
+  syncState: "pending" | "synced" | "blocked";
+  attempts: number;
+  nextAttemptAt: number;
+  lastError?: string;
+};
+
+type VisitRow = { payload: string; sync_state: "pending" | "synced" | "blocked"; attempts: number; next_attempt_at: number; last_error: string | null };
+let databasePromise: Promise<SQLite.SQLiteDatabase> | undefined;
+
+async function database(): Promise<SQLite.SQLiteDatabase> {
+  databasePromise ??= (async () => {
+    const db = await SQLite.openDatabaseAsync("west-garage-tracker.db");
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS tracker_state (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS parking_visits (
+        client_visit_id TEXT PRIMARY KEY, payload TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        sync_state TEXT NOT NULL CHECK (sync_state IN ('pending','synced','blocked')),
+        attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL,
+        last_error TEXT NULL
+      );
+      INSERT OR IGNORE INTO tracker_state (id, data) VALUES (1, '{"kind":"disabled","lastEventAt":0}');
+    `);
+    return db;
+  })();
+  return databasePromise;
+}
+
+export async function getTrackerState(): Promise<TrackerState> {
+  const db = await database();
+  const row = await db.getFirstAsync<{ data: string }>("SELECT data FROM tracker_state WHERE id = 1");
+  try { return row ? JSON.parse(row.data) as TrackerState : initialTrackerState(); }
+  catch { return initialTrackerState(); }
+}
+
+export async function applyTrackerEvent(event: TrackerEvent): Promise<{ state: TrackerState; visit?: CompletedVisit }> {
+  const db = await database();
+  let result: { state: TrackerState; visit?: CompletedVisit } = { state: initialTrackerState() };
+  await db.withExclusiveTransactionAsync(async tx => {
+    const row = await tx.getFirstAsync<{ data: string }>("SELECT data FROM tracker_state WHERE id = 1");
+    const previous = row ? JSON.parse(row.data) as TrackerState : initialTrackerState();
+    result = transition(previous, event, () => Crypto.randomUUID());
+    await tx.runAsync("UPDATE tracker_state SET data = ? WHERE id = 1", JSON.stringify(result.state));
+    if (result.visit) {
+      await tx.runAsync(
+        "INSERT INTO parking_visits (client_visit_id, payload, completed_at, sync_state, attempts, next_attempt_at) VALUES (?, ?, ?, 'pending', 0, ?)",
+        result.visit.clientVisitId, JSON.stringify(result.visit), result.visit.completedAt, event.at + 24 * 60 * 60_000
+      );
+    }
+  });
+  return result;
+}
+
+function fromRow(row: VisitRow): StoredVisit {
+  return { ...JSON.parse(row.payload) as CompletedVisit, syncState: row.sync_state, attempts: row.attempts,
+    nextAttemptAt: row.next_attempt_at, lastError: row.last_error ?? undefined };
+}
+
+export async function getRecentVisits(): Promise<StoredVisit[]> {
+  const db = await database();
+  return (await db.getAllAsync<VisitRow>("SELECT payload, sync_state, attempts, next_attempt_at, last_error FROM parking_visits ORDER BY completed_at DESC LIMIT 10")).map(fromRow);
+}
+
+export async function getDueVisits(now: number, limit = 25): Promise<StoredVisit[]> {
+  const db = await database();
+  return (await db.getAllAsync<VisitRow>(
+    "SELECT payload, sync_state, attempts, next_attempt_at, last_error FROM parking_visits WHERE sync_state = 'pending' AND next_attempt_at <= ? ORDER BY next_attempt_at LIMIT ?",
+    now, limit
+  )).map(fromRow);
+}
+
+export async function markVisitSynced(id: string): Promise<void> {
+  const db = await database();
+  await db.runAsync("UPDATE parking_visits SET sync_state = 'synced', last_error = NULL WHERE client_visit_id = ?", id);
+}
+
+export async function markVisitRejected(id: string, error: string): Promise<void> {
+  const db = await database();
+  await db.runAsync("UPDATE parking_visits SET sync_state = 'blocked', last_error = ? WHERE client_visit_id = ?", error.slice(0, 300), id);
+}
+
+export async function markVisitFailed(id: string, attempts: number, now: number): Promise<void> {
+  const db = await database();
+  const delay = Math.min(24 * 60 * 60_000, 15 * 60_000 * 2 ** Math.min(attempts, 7));
+  await db.runAsync(
+    "UPDATE parking_visits SET attempts = ?, next_attempt_at = ? WHERE client_visit_id = ? AND sync_state = 'pending'",
+    attempts, now + delay, id
+  );
+}
+
+export async function clearLocalVisits(): Promise<void> {
+  const db = await database();
+  await db.runAsync("DELETE FROM parking_visits");
+}

@@ -1,0 +1,28 @@
+import type { StoredVisit } from "./parkingTrackerStore";
+import type { CompletedVisit } from "./parkingTrackerState";
+
+export type Acknowledgement = { clientVisitId: string; status: "accepted" | "duplicate" | "rejected"; error?: string };
+
+export async function uploadQueuedVisits(
+  visits: StoredVisit[],
+  upload: (payload: CompletedVisit[]) => Promise<Acknowledgement[]>,
+  markSynced: (id: string) => Promise<void>,
+  markFailed: (id: string, attempts: number, now: number) => Promise<void>,
+  markRejected: (id: string, error: string) => Promise<void>,
+  now: () => number
+): Promise<void> {
+  const payload: CompletedVisit[] = visits.map(({ syncState: _state, attempts: _attempts, nextAttemptAt: _next, lastError: _error, ...visit }) => visit);
+  let acknowledgements: Acknowledgement[];
+  try { acknowledgements = await upload(payload); }
+  catch (error) {
+    for (const visit of visits) await markFailed(visit.clientVisitId, visit.attempts + 1, now());
+    throw error;
+  }
+  const acknowledged = new Map(acknowledgements.map(item => [item.clientVisitId, item]));
+  for (const visit of visits) {
+    const ack = acknowledged.get(visit.clientVisitId);
+    if (ack?.status === "accepted" || ack?.status === "duplicate") await markSynced(visit.clientVisitId);
+    else if (ack?.status === "rejected") await markRejected(visit.clientVisitId, ack.error ?? "Server rejected this visit.");
+    else await markFailed(visit.clientVisitId, visit.attempts + 1, now());
+  }
+}

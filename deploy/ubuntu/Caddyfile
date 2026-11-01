@@ -1,0 +1,18 @@
+# Internal reverse proxy for Tailscale Funnel.
+# Tailscale terminates public HTTPS on the stable *.ts.net hostname and
+# forwards only to this loopback listener. Caddy then proxies to the API.
+# This configuration intentionally does not listen on the LAN or Internet.
+# Do not attach a hostname matcher here: Funnel preserves its public *.ts.net
+# Host header when proxying locally. `bind` keeps this listener loopback-only.
+http://:8080 {
+	bind 127.0.0.1
+	encode zstd gzip
+
+	# Strip /parking before sending the request to the API, so its existing
+	# /v1/... routes remain unchanged. Future apps get their own path blocks.
+	handle_path /parking/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	respond "Not found" 404
+}

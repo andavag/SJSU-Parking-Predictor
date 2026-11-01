@@ -1,0 +1,10 @@
+[Unit]
+Description=Train SJSU Parking forecast models nightly in campus time
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 America/Los_Angeles
+Persistent=true
+Unit=sjsu-parking-forecast-train.service
+
+[Install]
+WantedBy=timers.target

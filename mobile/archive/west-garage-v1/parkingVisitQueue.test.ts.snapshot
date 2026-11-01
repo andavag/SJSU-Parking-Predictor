@@ -1,0 +1,43 @@
+import { describe, expect, it } from "vitest";
+import { uploadQueuedVisits } from "./parkingVisitQueue";
+import type { StoredVisit } from "./parkingTrackerStore";
+
+const visit: StoredVisit = {
+  clientVisitId: "123e4567-e89b-42d3-a456-426614174000", garageId: "west", startedAt: "2026-10-20T08:00:00Z",
+  completedAt: "2026-10-20T08:09:00Z", elapsedSeconds: 540, classification: "arrived_by_vehicle",
+  confidence: "high", trackingConfigVersion: 1, syncState: "pending", attempts: 0, nextAttemptAt: 0
+};
+
+describe("visit sync queue", () => {
+  it("keeps a failed upload pending and marks an acknowledged retry synced", async () => {
+    const pending = new Map([[visit.clientVisitId, { ...visit }]]);
+    const markSynced = async (id: string) => { pending.get(id)!.syncState = "synced"; };
+    const markFailed = async (id: string, attempts: number) => { pending.get(id)!.attempts = attempts; };
+    const markRejected = async () => undefined;
+    await expect(uploadQueuedVisits([visit], async () => { throw new Error("offline"); }, markSynced, markFailed, markRejected, () => 1)).rejects.toThrow("offline");
+    expect(pending.get(visit.clientVisitId)).toMatchObject({ syncState: "pending", attempts: 1 });
+    await uploadQueuedVisits([{ ...visit, attempts: 1 }], async () => [{ clientVisitId: visit.clientVisitId, status: "duplicate" }], markSynced, markFailed, markRejected, () => 2);
+    expect(pending.get(visit.clientVisitId)?.syncState).toBe("synced");
+  });
+
+  it("retains a server-rejected record locally with its reason", async () => {
+    let blocked: { id: string; reason: string } | undefined;
+    await uploadQueuedVisits([visit], async () => [{ clientVisitId: visit.clientVisitId, status: "rejected", error: "Invalid summary." }],
+      async () => { throw new Error("must not mark synced"); }, async () => { throw new Error("must not retry rejected data"); },
+      async (id, reason) => { blocked = { id, reason }; }, () => 1);
+    expect(blocked).toEqual({ id: visit.clientVisitId, reason: "Invalid summary." });
+  });
+
+  it("marks only individually acknowledged visits after an interrupted upload", async () => {
+    const second = { ...visit, clientVisitId: "123e4567-e89b-42d3-a456-426614174001" };
+    const synced: string[] = [];
+    const failed: string[] = [];
+    await uploadQueuedVisits([visit, second], async () => [{ clientVisitId: visit.clientVisitId, status: "accepted" }],
+      async id => { synced.push(id); }, async id => { failed.push(id); }, async () => undefined, () => 1);
+    expect(synced).toEqual([visit.clientVisitId]);
+    expect(failed).toEqual([second.clientVisitId]);
+    await uploadQueuedVisits([second], async () => [{ clientVisitId: second.clientVisitId, status: "duplicate" }],
+      async id => { synced.push(id); }, async () => undefined, async () => undefined, () => 2);
+    expect(synced).toEqual([visit.clientVisitId, second.clientVisitId]);
+  });
+});

@@ -1,0 +1,147 @@
+import NetInfo from "@react-native-community/netinfo";
+import * as Location from "expo-location";
+import { useCallback, useEffect, useState } from "react";
+import { Alert, AppState, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+
+import { reconcileTracking, setTrackingEnabled, type TrackingStatus } from "./parkingTrackerRuntime";
+import { clearLocalVisits, getRecentVisits, getTrackerState, type StoredVisit } from "./parkingTrackerStore";
+import type { TrackerState } from "./parkingTrackerState";
+import { enrollInstallation, hasInstallationToken, syncDueVisits } from "./parkingVisitSync";
+
+function confirm(title: string, message: string, action: string): Promise<boolean> {
+  return new Promise(resolve => Alert.alert(title, message, [
+    { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+    { text: action, onPress: () => resolve(true) }
+  ], { cancelable: true, onDismiss: () => resolve(false) }));
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : "The tracker could not finish that action.";
+}
+
+export function WestGarageTracker() {
+  const [status, setStatus] = useState<TrackingStatus>("tracking paused");
+  const [state, setState] = useState<TrackerState>();
+  const [visits, setVisits] = useState<StoredVisit[]>([]);
+  const [hasToken, setHasToken] = useState(false);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const enabled = state !== undefined && state.kind !== "disabled";
+
+  const refresh = useCallback(async () => {
+    try {
+      setStatus(await reconcileTracking());
+      const [nextState, nextVisits, token] = await Promise.all([getTrackerState(), getRecentVisits(), hasInstallationToken()]);
+      setState(nextState); setVisits(nextVisits); setHasToken(token);
+    } catch (failure) { setError(message(failure)); }
+  }, []);
+
+  useEffect(() => {
+    void refresh().then(() => syncDueVisits().catch(() => undefined));
+    const foreground = AppState.addEventListener("change", next => {
+      if (next === "active") void refresh().then(() => syncDueVisits().catch(() => undefined));
+    });
+    const connectivity = NetInfo.addEventListener(info => {
+      if (info.isConnected && info.isInternetReachable !== false) void syncDueVisits().catch(() => undefined);
+    });
+    const interval = setInterval(() => { void refresh(); }, 30_000);
+    return () => { foreground.remove(); connectivity(); clearInterval(interval); };
+  }, [refresh]);
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true); setError(undefined);
+    try {
+      if (enabled) {
+        setStatus(await setTrackingEnabled(false));
+      } else {
+        if (Platform.OS !== "android") return;
+        if (!await confirm("Enable West Garage tracking?", "Precise location lets the app estimate when you arrive at West Garage by car. Tracking stays off until setup is complete.", "Continue")) return;
+        const foreground = await Location.requestForegroundPermissionsAsync();
+        if (!foreground.granted || foreground.android?.accuracy !== "fine") {
+          setError("Precise location is required. Select precise location in Android Settings, then try again.");
+          return;
+        }
+        if (!await confirm("Allow background location?", "Background access lets the app detect arrival and walking away while the screen is off. On Android 11 and later, the next step opens system Settings. Android may delay events or stop them after force-close.", "Open permission settings")) return;
+        if (!(await Location.requestBackgroundPermissionsAsync()).granted) {
+          setError("Background location is required for automatic tracking. You can enable it in Android Settings.");
+          return;
+        }
+        if (await confirm("Improve trip classification?", "Motion activity helps distinguish arriving by car from returning on foot. If you decline, the app can use speed evidence with lower confidence.", "Continue")) {
+          await Location.requestMotionActivityPermissionsAsync().catch(() => undefined);
+        }
+        setStatus(await setTrackingEnabled(true));
+      }
+    } catch (failure) { setError(message(failure)); }
+    finally { setBusy(false); await refresh(); }
+  };
+
+  const enroll = async () => {
+    if (busy || !code.trim()) return;
+    setBusy(true); setError(undefined);
+    try { await enrollInstallation(code); setCode(""); await refresh(); }
+    catch (failure) { setError(message(failure)); }
+    finally { setBusy(false); }
+  };
+
+  const clear = async () => {
+    if (!await confirm("Clear local visit history?", "This also discards visits waiting to upload. Visits already accepted by the server will remain there.", "Clear history")) return;
+    try { await clearLocalVisits(); await refresh(); }
+    catch (failure) { setError(message(failure)); }
+  };
+
+  const active = state?.kind === "active";
+  return (
+    <View style={styles.section}>
+      <Text style={styles.title}>West Garage parking tracker</Text>
+      <Text style={styles.body}>Estimate the time from arriving by car within 100 m to walking beyond 160 m of West Garage.</Text>
+      <Text style={styles.status}>Status: {status}</Text>
+      {active ? <Text style={styles.body}>Parking process active since {new Date(state.startedAt).toLocaleTimeString()}.</Text> : null}
+      {state?.kind === "discarded" ? <Text style={styles.hint}>Last candidate discarded: {state.reason.replace("_", " ")}.</Text> : null}
+      <Pressable accessibilityRole="button" disabled={busy || !state || Platform.OS !== "android"} onPress={() => void toggle()} style={styles.button}>
+        <Text style={styles.buttonText}>{enabled ? "Turn off West Garage tracking" : "Enable West Garage tracking"}</Text>
+      </Pressable>
+      <Text style={styles.hint}>Results are estimates, usually accurate to minutes. The app saves visit summaries rather than a location trail. Android may delay background events; force-close or battery restrictions can stop them.</Text>
+      <Text style={styles.subtitle}>Daily upload</Text>
+      {hasToken ? <Text style={styles.body}>Installation enrolled. Pending visits upload when due and tracking is on.</Text> : (
+        <View>
+          <Text style={styles.body}>Local tracking works without enrollment. Enter a one-time code from the server to enable uploads.</Text>
+          <TextInput accessibilityLabel="One-time enrollment code" autoCapitalize="none" keyboardType="number-pad"
+            value={code} onChangeText={setCode} placeholder="Enrollment code" style={styles.input} />
+          <Pressable accessibilityRole="button" disabled={busy || !code.trim()} onPress={() => void enroll()} style={styles.secondaryButton}>
+            <Text style={styles.secondaryText}>Enroll this installation</Text>
+          </Pressable>
+        </View>
+      )}
+      <Text style={styles.subtitle}>Recent local estimates</Text>
+      {visits.length === 0 ? <Text style={styles.hint}>No completed visits yet.</Text> : visits.map(visit => (
+        <Text key={visit.clientVisitId} style={styles.visit}>
+          {new Date(visit.completedAt).toLocaleString()} · {Math.round(visit.elapsedSeconds / 60)} min · {visit.confidence} confidence · {visit.syncState}{visit.lastError ? ` (${visit.lastError})` : ""}
+        </Text>
+      ))}
+      <Pressable accessibilityRole="button" onPress={() => void clear()} style={styles.clearButton}>
+        <Text style={styles.clearText}>Clear local history</Text>
+      </Pressable>
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  section: { borderTopColor: "#D0D5DD", borderTopWidth: 1, marginTop: 12, paddingTop: 22, paddingBottom: 20 },
+  title: { color: "#101828", fontSize: 20, fontWeight: "800", marginBottom: 8 },
+  subtitle: { color: "#101828", fontSize: 17, fontWeight: "700", marginTop: 20, marginBottom: 8 },
+  body: { color: "#344054", fontSize: 15, lineHeight: 22, marginBottom: 8 },
+  hint: { color: "#667085", fontSize: 13, lineHeight: 19, marginTop: 8 },
+  status: { color: "#0055A5", fontSize: 15, fontWeight: "700", marginVertical: 12 },
+  button: { backgroundColor: "#0055A5", borderRadius: 8, padding: 14, marginVertical: 8 },
+  buttonText: { color: "#FFFFFF", fontWeight: "800", textAlign: "center" },
+  secondaryButton: { borderColor: "#0055A5", borderRadius: 8, borderWidth: 1, padding: 12 },
+  secondaryText: { color: "#0055A5", fontWeight: "700", textAlign: "center" },
+  input: { backgroundColor: "#FFFFFF", borderColor: "#D0D5DD", borderRadius: 8, borderWidth: 1, padding: 12, marginVertical: 8 },
+  visit: { color: "#344054", fontSize: 14, lineHeight: 22, marginBottom: 7 },
+  clearButton: { marginTop: 14, paddingVertical: 8 },
+  clearText: { color: "#B42318", fontWeight: "700" },
+  error: { color: "#B42318", fontSize: 14, marginTop: 8 }
+});

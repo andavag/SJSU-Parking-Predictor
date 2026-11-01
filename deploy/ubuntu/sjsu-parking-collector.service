@@ -1,0 +1,18 @@
+[Unit]
+Description=SJSU Parking history collector
+Wants=network-online.target
+After=network-online.target mysql.service
+
+[Service]
+Type=oneshot
+User=sjsu-parking
+Group=sjsu-parking
+WorkingDirectory=/srv/sjsu-parking/api
+Environment=NODE_ENV=production
+Environment=NODE_EXTRA_CA_CERTS=/srv/sjsu-parking/api/certificates/incommon-rsa-ov-ssl-ca-3.pem
+EnvironmentFile=/etc/sjsu-parking/collector.env
+ExecStart=/usr/bin/node --use-system-ca --import tsx src/collector.ts
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict

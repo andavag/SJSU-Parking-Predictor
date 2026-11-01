@@ -1,0 +1,24 @@
+[Unit]
+Description=SJSU Parking local forecasting worker
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sjsu-parking
+Group=sjsu-parking
+WorkingDirectory=/srv/sjsu-parking/forecasting
+Environment=PYTHONUNBUFFERED=1
+Environment=PARKING_FORECAST_ARTIFACT_DIR=/srv/sjsu-parking/forecasting/artifacts
+EnvironmentFile=/etc/sjsu-parking/collector.env
+ExecStart=/srv/sjsu-parking/forecasting-venv/bin/uvicorn parking_forecast.service:app --host 127.0.0.1 --port 3002 --no-access-log
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/sjsu-parking/forecasting
+
+[Install]
+WantedBy=multi-user.target

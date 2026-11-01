@@ -1,0 +1,47 @@
+# Dependencies and generated output
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.venv/
+**/dist/
+**/coverage/
+**/.expo/
+**/.gradle*/
+**/.kotlin/
+**/android/
+**/ios/
+**/*.tsbuildinfo
+
+# Credentials and local configuration (keep documented examples)
+**/.env
+**/.env.*
+!**/.env.example
+**/*.key
+**/*.jks
+**/*.p8
+**/*.p12
+**/*.mobileprovision
+
+# Local tools, logs, data, and release handoff
+**/.tools/
+**/*.log
+**/*.apk
+**/*.aab
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+api/cloudflared.exe
+forecasting/artifacts/
+handoff/
+mobile/handoff/
+mobile/sjsu-parking-*-check.png
+.local-backups/
+deploy/ubuntu/security-review-2026-10-10/
+deploy/ubuntu/duckdns*
+deploy/ubuntu/sjsu-parking-duckdns.*
+deploy/ubuntu/migrate-windows-mysql-data.sh
+
+# Editor/OS state
+.DS_Store
+mobile/.claude/

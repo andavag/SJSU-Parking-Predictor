@@ -1,0 +1,9 @@
+fastapi==0.146.0
+joblib==1.5.2
+mysql-connector-python==26.7.0
+numpy==2.5.3
+pandas==3.0.6
+scikit-learn==1.9.1
+statsmodels==0.15.0
+uvicorn==0.53.0
+xgboost==3.4.1

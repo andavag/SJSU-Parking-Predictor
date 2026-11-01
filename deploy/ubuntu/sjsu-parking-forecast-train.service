@@ -1,0 +1,21 @@
+[Unit]
+Description=Train and evaluate SJSU Parking forecast models
+After=mysql.service
+
+[Service]
+Type=oneshot
+User=sjsu-parking
+Group=sjsu-parking
+WorkingDirectory=/srv/sjsu-parking/forecasting
+Environment=PYTHONUNBUFFERED=1
+Environment=PARKING_FORECAST_ARTIFACT_DIR=/srv/sjsu-parking/forecasting/artifacts
+EnvironmentFile=/etc/sjsu-parking/collector.env
+ExecStart=/srv/sjsu-parking/forecasting-venv/bin/python -m parking_forecast.train
+# A normal run is much shorter, but this leaves room for a clean retry after
+# an operating-system update or an unusually large history import.
+TimeoutStartSec=1h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/sjsu-parking/forecasting

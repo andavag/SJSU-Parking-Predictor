@@ -1,0 +1,71 @@
+import * as Location from "expo-location";
+import * as SecureStore from "expo-secure-store";
+
+import { getApiBaseUrl } from "./api";
+import { getDueVisits, getTrackerState, markVisitFailed, markVisitRejected, markVisitSynced } from "./parkingTrackerStore";
+import { uploadQueuedVisits, type Acknowledgement } from "./parkingVisitQueue";
+
+const TOKEN_KEY = "west-garage-installation-token-v1";
+let running: Promise<void> | undefined;
+let syncController: AbortController | undefined;
+class UnauthorizedInstallationError extends Error {}
+
+async function postJson<T>(path: string, body: unknown, token?: string, controller = new AbortController()): Promise<T> {
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(`${getApiBaseUrl()}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(body), signal: controller.signal
+    });
+    const data = await response.json().catch(() => null) as (T & { error?: string }) | null;
+    if (response.status === 401 && token) throw new UnauthorizedInstallationError("Installation enrollment was revoked. Enter a new one-time code.");
+    if (!response.ok || !data) throw new Error(data?.error ?? `Server returned ${response.status}.`);
+    return data;
+  } finally { clearTimeout(timeout); }
+}
+
+export async function hasInstallationToken(): Promise<boolean> {
+  return Boolean(await SecureStore.getItemAsync(TOKEN_KEY));
+}
+
+export async function enrollInstallation(code: string): Promise<void> {
+  const response = await postJson<{ token: string }>("/v1/installations/enroll", { code: code.trim() });
+  if (!response.token) throw new Error("The server did not return an installation credential.");
+  await SecureStore.setItemAsync(TOKEN_KEY, response.token);
+}
+
+export function syncDueVisits(): Promise<void> {
+  running ??= performSync().finally(() => { running = undefined; });
+  return running;
+}
+
+export function pauseSync(): void { syncController?.abort(); }
+
+async function performSync(): Promise<void> {
+  if ((await getTrackerState()).kind === "disabled") return;
+  if (!await Location.hasServicesEnabledAsync()) return;
+  const foreground = await Location.getForegroundPermissionsAsync();
+  if (!foreground.granted || foreground.android?.accuracy !== "fine") return;
+  if (!(await Location.getBackgroundPermissionsAsync()).granted) return;
+  const token = await SecureStore.getItemAsync(TOKEN_KEY);
+  if (!token) return;
+  const visits = await getDueVisits(Date.now());
+  if (visits.length === 0) return;
+  if ((await getTrackerState()).kind === "disabled") return;
+  const controller = new AbortController();
+  syncController = controller;
+  try {
+    await uploadQueuedVisits(visits, async payload => {
+      const response = await postJson<{ acknowledgements: Acknowledgement[] }>("/v1/parking-visits/batch", { visits: payload }, token, controller);
+      return response.acknowledgements;
+    }, markVisitSynced, markVisitFailed, markVisitRejected, Date.now);
+  } catch (error) {
+    if (error instanceof UnauthorizedInstallationError) await SecureStore.deleteItemAsync(TOKEN_KEY);
+    throw error;
+  } finally { if (syncController === controller) syncController = undefined; }
+}

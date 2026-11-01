@@ -1,0 +1,13 @@
+# Dependencies and local Expo state are rebuilt by EAS.
+node_modules/
+.expo/
+/android/
+/.gradle-local/
+/.gradle-prediction-build/
+*.log
+
+# Local testing artifacts are not app source files.
+SJSU-Parking-*.apk
+sjsu-parking-phone-check.png
+sjsu-parking-webview-check.png
+sjsu-parking-cloudflare-check.png

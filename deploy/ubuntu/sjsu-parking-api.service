@@ -1,0 +1,27 @@
+[Unit]
+Description=SJSU Parking API
+Wants=network-online.target
+After=network-online.target mysql.service
+
+[Service]
+Type=simple
+User=sjsu-parking
+Group=sjsu-parking
+WorkingDirectory=/srv/sjsu-parking/api
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=NODE_EXTRA_CA_CERTS=/srv/sjsu-parking/api/certificates/incommon-rsa-ov-ssl-ca-3.pem
+EnvironmentFile=/etc/sjsu-parking/api.env
+EnvironmentFile=-/etc/sjsu-parking/visits.env
+ExecStart=/usr/bin/node --use-system-ca --import tsx src/index.ts
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/sjsu-parking/api
+
+[Install]
+WantedBy=multi-user.target

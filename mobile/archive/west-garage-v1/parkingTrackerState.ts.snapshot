@@ -1,0 +1,109 @@
+export const WEST_GARAGE = {
+  id: "west" as const,
+  name: "West Garage",
+  latitude: 37.3316667,
+  longitude: -121.8827222,
+  entryRadiusMeters: 100,
+  exitRadiusMeters: 160,
+  trackingConfigVersion: 1
+};
+
+export type Evidence = "motion" | "speed";
+export type Confidence = "high" | "medium" | "low";
+export type TrackerState =
+  | { kind: "disabled"; lastEventAt: number }
+  | { kind: "monitoring"; lastEventAt: number; pendingInnerAt?: number; lastOuterExitAt?: number }
+  | { kind: "approach"; lastEventAt: number; approachAt: number; arrivalEvidence: Evidence }
+  | { kind: "active"; lastEventAt: number; startedAt: number; arrivalEvidence: Evidence }
+  | { kind: "discarded"; lastEventAt: number; reason: "drive_through" | "uncertain" | "stale" };
+
+export type TrackerEvent =
+  | { type: "enable"; at: number }
+  | { type: "disable"; at: number }
+  | { type: "outer_enter" | "inner_enter" | "inner_exit" | "outer_exit"; at: number; evidence?: Evidence }
+  | { type: "expire"; at: number };
+
+export type CompletedVisit = {
+  clientVisitId: string;
+  garageId: "west";
+  startedAt: string;
+  completedAt: string;
+  elapsedSeconds: number;
+  classification: "arrived_by_vehicle";
+  confidence: Confidence;
+  trackingConfigVersion: 1;
+};
+
+const APPROACH_TTL_MS = 10 * 60_000;
+const ACTIVE_TTL_MS = 60 * 60_000;
+const MIN_VISIT_MS = 120_000;
+const REORDER_WINDOW_MS = 2 * 60_000;
+
+export function initialTrackerState(): TrackerState {
+  return { kind: "disabled", lastEventAt: 0 };
+}
+
+export function transition(
+  state: TrackerState,
+  event: TrackerEvent,
+  newVisitId: () => string
+): { state: TrackerState; visit?: CompletedVisit } {
+  if (event.type === "disable") return { state: { kind: "disabled", lastEventAt: event.at } };
+  if (event.type === "enable") return state.kind === "disabled"
+    ? { state: { kind: "monitoring", lastEventAt: event.at } }
+    : { state };
+  if (state.kind === "disabled" || event.at <= state.lastEventAt) return { state };
+
+  if (state.kind === "active" && event.at - state.startedAt > ACTIVE_TTL_MS) {
+    return { state: { kind: "discarded", lastEventAt: event.at, reason: "stale" } };
+  }
+  if (state.kind === "approach" && event.at - state.approachAt > APPROACH_TTL_MS) {
+    state = { kind: "monitoring", lastEventAt: state.lastEventAt };
+  }
+  if (state.kind === "monitoring" && state.pendingInnerAt && event.at - state.pendingInnerAt > REORDER_WINDOW_MS) {
+    state = { kind: "monitoring", lastEventAt: state.lastEventAt };
+  }
+  if (event.type === "expire") return { state };
+  if (event.type === "inner_exit") {
+    return { state: state.kind === "monitoring"
+      ? { kind: "monitoring", lastEventAt: event.at }
+      : { ...state, lastEventAt: event.at } };
+  }
+  if (event.type === "outer_enter") {
+    if (state.kind === "active") return { state: { ...state, lastEventAt: event.at } };
+    if (state.kind === "monitoring" && state.pendingInnerAt && event.evidence && event.at - state.pendingInnerAt <= REORDER_WINDOW_MS) {
+      return { state: { kind: "active", lastEventAt: event.at, startedAt: state.pendingInnerAt, arrivalEvidence: event.evidence } };
+    }
+    return { state: event.evidence
+      ? { kind: "approach", lastEventAt: event.at, approachAt: event.at, arrivalEvidence: event.evidence }
+      : { kind: "monitoring", lastEventAt: event.at } };
+  }
+  if (event.type === "inner_enter") {
+    if (state.kind === "approach" && event.at - state.approachAt <= APPROACH_TTL_MS) {
+      return { state: { kind: "active", lastEventAt: event.at, startedAt: event.at, arrivalEvidence: state.arrivalEvidence } };
+    }
+    return { state: state.kind === "monitoring" && (!state.lastOuterExitAt || event.at - state.lastOuterExitAt > REORDER_WINDOW_MS)
+      ? { kind: "monitoring", lastEventAt: event.at, pendingInnerAt: event.at }
+      : { ...state, lastEventAt: event.at } };
+  }
+  // An outer exit without an active session clears a prior approach. That
+  // prevents a late inner-enter callback from starting a visit outside.
+  if (state.kind !== "active") return { state: { kind: "monitoring", lastEventAt: event.at, lastOuterExitAt: event.at } };
+  const elapsedMs = event.at - state.startedAt;
+  if (elapsedMs < MIN_VISIT_MS) {
+    return { state: { kind: "discarded", lastEventAt: event.at, reason: "drive_through" } };
+  }
+  if (!event.evidence) {
+    return { state: { kind: "discarded", lastEventAt: event.at, reason: "uncertain" } };
+  }
+  const confidence: Confidence = state.arrivalEvidence === "motion" && event.evidence === "motion"
+    ? "high" : state.arrivalEvidence === "speed" && event.evidence === "speed" ? "low" : "medium";
+  return {
+    state: { kind: "monitoring", lastEventAt: event.at, lastOuterExitAt: event.at },
+    visit: {
+      clientVisitId: newVisitId(), garageId: "west", startedAt: new Date(state.startedAt).toISOString(),
+      completedAt: new Date(event.at).toISOString(), elapsedSeconds: Math.round(elapsedMs / 1000),
+      classification: "arrived_by_vehicle", confidence, trackingConfigVersion: 1
+    }
+  };
+}

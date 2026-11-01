@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "SJSU Parking",
+    "slug": "sjsu-parking",
+    "version": "1.3.0",
+    "runtimeVersion": { "policy": "appVersion" },
+    "updates": {
+      "url": "https://u.expo.dev/64ff7f40-aee0-4ef3-b3f4-4695e935bdf0",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "requestHeaders": { "expo-channel-name": "preview" }
+    },
+    "orientation": "portrait",
+    "icon": "./assets/sjsu-parking-adaptive-icon-v3.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "versionCode": 4,
+      "blockedPermissions": ["android.permission.ACTIVITY_RECOGNITION", "com.google.android.gms.permission.ACTIVITY_RECOGNITION"],
+      "allowBackup": false,
+      "package": "com.andavag.sjsuparking",
+      "adaptiveIcon": {
+        "backgroundColor": "#0055A5",
+        "foregroundImage": "./assets/sjsu-parking-adaptive-icon-v3.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "64ff7f40-aee0-4ef3-b3f4-4695e935bdf0"
+      }
+    },
+    "owner": "andavag",
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      ["expo-location", {
+        "isAndroidBackgroundLocationEnabled": true,
+        "isAndroidForegroundServiceEnabled": false
+      }],
+      "expo-secure-store"
+    ]
+  }
+}

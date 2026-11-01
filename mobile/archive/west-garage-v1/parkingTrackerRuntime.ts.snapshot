@@ -1,0 +1,119 @@
+import * as BackgroundTask from "expo-background-task";
+import * as Location from "expo-location";
+import * as TaskManager from "expo-task-manager";
+import { Platform } from "react-native";
+
+import { applyTrackerEvent, getTrackerState } from "./parkingTrackerStore";
+import { WEST_GARAGE, type Evidence } from "./parkingTrackerState";
+import { pauseSync, syncDueVisits } from "./parkingVisitSync";
+
+export const GEOFENCE_TASK = "west-garage-geofence-v1";
+export const SYNC_TASK = "west-garage-sync-v1";
+const INNER_ID = "west:inner:v1";
+const OUTER_ID = "west:outer:v1";
+
+type GeofenceData = { eventType: Location.GeofencingEventType; region: Location.LocationRegion };
+let geofenceQueue: Promise<void> = Promise.resolve();
+
+TaskManager.defineTask<GeofenceData>(GEOFENCE_TASK, async ({ data, error }) => {
+  if (error || !data) return;
+  const at = Date.now();
+  const isOuter = data.region.identifier === OUTER_ID;
+  const isInner = data.region.identifier === INNER_ID;
+  if (!isOuter && !isInner) return;
+  const isEnter = data.eventType === Location.GeofencingEventType.Enter;
+  const type = isOuter ? (isEnter ? "outer_enter" : "outer_exit") : (isEnter ? "inner_enter" : "inner_exit");
+  const work = geofenceQueue.then(async () => {
+    const evidence = type === "outer_enter" ? await classifyMotion("vehicle")
+      : type === "outer_exit" ? await classifyMotion("walking") : undefined;
+    await applyTrackerEvent({ type, at, evidence });
+  });
+  geofenceQueue = work.catch(() => undefined);
+  await work;
+});
+
+TaskManager.defineTask(SYNC_TASK, async () => {
+  try {
+    await syncDueVisits();
+    return BackgroundTask.BackgroundTaskResult.Success;
+  } catch {
+    return BackgroundTask.BackgroundTaskResult.Failed;
+  }
+});
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms); })]);
+  } catch { return undefined; }
+  finally { if (timer) clearTimeout(timer); }
+}
+
+async function classifyMotion(kind: "vehicle" | "walking"): Promise<Evidence | undefined> {
+  try {
+    const permission = await Location.getMotionActivityPermissionsAsync();
+    if (permission.granted) {
+      const motion = await withTimeout(Location.getMotionActivityAsync(), 5_000);
+      const activity = kind === "vehicle" ? motion?.activities.automotive : motion?.activities.walking;
+      if (activity?.detected && activity.confidence >= Location.MotionActivityConfidence.Medium) return "motion";
+    }
+  } catch { /* Speed can still provide evidence. */ }
+  try {
+    const fix = await Location.getLastKnownPositionAsync({ maxAge: 30_000, requiredAccuracy: 50 })
+      ?? await withTimeout(Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }), 15_000);
+    if (!fix || Date.now() - fix.timestamp > 30_000 || fix.coords.accuracy === null || fix.coords.accuracy > 50) return undefined;
+    const speed = fix.coords.speed;
+    if (speed === null || speed < 0) return undefined;
+    return kind === "vehicle" ? (speed >= 4 ? "speed" : undefined)
+      : (speed >= 0.4 && speed <= 2.2 ? "speed" : undefined);
+  } catch { return undefined; }
+}
+
+function regions(): Location.LocationRegion[] {
+  const center = { latitude: WEST_GARAGE.latitude, longitude: WEST_GARAGE.longitude };
+  return [
+    { ...center, identifier: INNER_ID, radius: WEST_GARAGE.entryRadiusMeters, notifyOnEnter: true, notifyOnExit: true },
+    { ...center, identifier: OUTER_ID, radius: WEST_GARAGE.exitRadiusMeters, notifyOnEnter: true, notifyOnExit: true }
+  ];
+}
+
+export type TrackingStatus = "tracking active" | "tracking paused" | "precise location missing" |
+  "background permission missing" | "location services disabled" | "background tracking unavailable";
+
+export async function trackingStatus(): Promise<TrackingStatus> {
+  if (Platform.OS !== "android") return "background tracking unavailable";
+  const state = await getTrackerState();
+  if (state.kind === "disabled") return "tracking paused";
+  if (!await Location.hasServicesEnabledAsync()) return "location services disabled";
+  const foreground = await Location.getForegroundPermissionsAsync();
+  if (!foreground.granted || foreground.android?.accuracy !== "fine") return "precise location missing";
+  if (!(await Location.getBackgroundPermissionsAsync()).granted) return "background permission missing";
+  if (!await TaskManager.isAvailableAsync()) return "background tracking unavailable";
+  if (!await Location.isBackgroundLocationAvailableAsync()) return "background tracking unavailable";
+  return "tracking active";
+}
+
+export async function reconcileTracking(): Promise<TrackingStatus> {
+  const status = await trackingStatus();
+  if (status !== "tracking active") {
+    pauseSync();
+    if (await Location.hasStartedGeofencingAsync(GEOFENCE_TASK)) await Location.stopGeofencingAsync(GEOFENCE_TASK);
+    if (await TaskManager.isTaskRegisteredAsync(SYNC_TASK)) await BackgroundTask.unregisterTaskAsync(SYNC_TASK);
+    return status;
+  }
+  if (!await Location.hasStartedGeofencingAsync(GEOFENCE_TASK)) {
+    await Location.startGeofencingAsync(GEOFENCE_TASK, regions());
+  }
+  if (await BackgroundTask.getStatusAsync() === BackgroundTask.BackgroundTaskStatus.Available
+    && !await TaskManager.isTaskRegisteredAsync(SYNC_TASK)) {
+    await BackgroundTask.registerTaskAsync(SYNC_TASK, { minimumInterval: 1440 });
+  }
+  await applyTrackerEvent({ type: "expire", at: Date.now() });
+  return status;
+}
+
+export async function setTrackingEnabled(enabled: boolean): Promise<TrackingStatus> {
+  if (!enabled) pauseSync();
+  await applyTrackerEvent(enabled ? { type: "enable", at: Date.now() } : { type: "disable", at: Date.now() });
+  return reconcileTracking();
+}
