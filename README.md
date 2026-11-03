@@ -26,6 +26,12 @@ Android 1.3.0 adds an opt-in West Garage crossing logger. Its server API/schema 
 
 The app does not guarantee background location callbacks or continuous background refresh. Crossing uploads require installation enrollment; public parking reads remain unauthenticated. No raw route or coordinates are uploaded.
 
+## App Preview
+<img width="1008" height="2244" alt="Screenshot_20261031-205359" src="https://github.com/user-attachments/assets/30caa8c8-4434-4b47-90b5-1418a86678fc" /> <img width="1008" height="2244" alt="Screenshot_20261031-205535" src="https://github.com/user-attachments/assets/3fdfa25b-3620-40fe-aa47-61f2bd50929f" /> <img width="1008" height="2244" alt="Screenshot_20261031-205540" src="https://github.com/user-attachments/assets/546d7780-def4-4476-8fb1-1c8ab4da88d6" />
+
+
+
+
 ## License
 
 The project is MIT licensed. See [LICENSE](LICENSE). The Expo template notice is retained in [mobile/LICENSE](mobile/LICENSE).
